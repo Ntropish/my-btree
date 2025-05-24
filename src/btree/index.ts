@@ -1,46 +1,15 @@
-/**
- * OPFS B-Tree Library
- *
- * High-performance B-tree implementation using OPFS for persistent storage
- */
+export { BTreeProxy as BTree } from "./workers/workerUtils"; // Public API is the Proxy
+export type { BTreeConfig, BTreeStats, RangeOptions } from "./BTreeConfig";
 
-// Re-export main client class
-export { BTreeClient as BTree } from "./client/BTreeClient";
+export { type Serializer } from "./serializers/Serializer";
+export { NumberSerializer } from "./serializers/NumberSerializer";
+export { StringSerializer } from "./serializers/StringSerializer";
+// Export other serializers
+// export { Int32Serializer } from './serializers/Int32Serializer';
+// export { BooleanSerializer } from './serializers/BooleanSerializer';
+// export { BigIntSerializer } from './serializers/BigIntSerializer';
+// export { JSONSerializer } from './serializers/JSONSerializer';
+// export { CompositeSerializer } from './serializers/CompositeSerializer';
 
-// Export types
-export type {
-  BTreeConfig,
-  BTreeStats,
-  BTreeNode,
-  SearchResult,
-  RangeOptions,
-  BTreeCursor,
-  BTreeTransaction,
-  BulkLoadOptions,
-  RecoveryOptions,
-} from "./types/btree";
-
-// Export serializers
-export {
-  type Serializer,
-  NumberSerializer,
-  Int32Serializer,
-  StringSerializer,
-  BooleanSerializer,
-  BigIntSerializer,
-  JSONSerializer,
-  CompositeSerializer,
-} from "./storage/serializers";
-
-// Export errors
-export {
-  BTreeError,
-  FileError,
-  NodeError,
-  SerializationError,
-  CorruptionError,
-  NotInitializedError,
-} from "./utils/errors";
-
-// Version
-export const VERSION = "0.1.0";
+// Example custom serializer (can be defined by user)
+// export { DateSerializer } from './path/to/DateSerializer'; // If you make one

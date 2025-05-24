@@ -72,12 +72,22 @@ interface BTreeStore {
 }
 
 // Global reference to prevent multiple initializations
-let globalBTree: BTree<number, string> | null = null;
 let initializationPromise: Promise<void> | null = null;
+
+const treeName = "showcase-btree";
+
+const createConfig = {
+  name: treeName,
+  keySerializer: new NumberSerializer(),
+  valueSerializer: new StringSerializer(),
+  // No compareKeys provided explicitly, so defaultCompareKeys should be used.
+};
+console.log("[TEST_CREATE_CASE] Config for BTreeProxy.create:", createConfig);
+const btreeProxy = await BTree.openOrCreate<number, string>(createConfig);
 
 export const useBTreeStore = create<BTreeStore>((set, get) => ({
   // Initial state
-  btree: null,
+  btree: btreeProxy,
   loading: false,
   initialized: false,
   entries: [],
@@ -152,17 +162,15 @@ export const useBTreeStore = create<BTreeStore>((set, get) => ({
 
   // Cleanup B-tree
   cleanup: async () => {
-    if (globalBTree) {
+    if (btreeProxy) {
       try {
-        await globalBTree.close();
+        await btreeProxy.close();
       } catch (error) {
         console.error("Error closing B-tree:", error);
       }
-      globalBTree = null;
     }
 
     set({
-      btree: null,
       initialized: false,
       entries: [],
       stats: null,

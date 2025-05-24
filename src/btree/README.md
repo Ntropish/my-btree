@@ -24,7 +24,7 @@ npm install opfs-btree
 import { BTree, NumberSerializer, StringSerializer } from "btree";
 
 // Create a B-tree with number keys and string values
-const tree = await BTree.create({
+const tree = await BTree.openOrCreate({
   name: "my-index",
   keySerializer: new NumberSerializer(),
   valueSerializer: new StringSerializer(),
