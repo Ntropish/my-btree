@@ -12,12 +12,11 @@ import type { BTreeConfig } from "../types/btree";
 import { calculateCRC32 } from "../utils/checksum";
 
 export class FileManager {
+  isOpen = false;
   private fileHandle: FileSystemFileHandle | null = null;
   private syncHandle: FileSystemSyncAccessHandle | null = null;
   private header: FileHeader | null = null;
-  private isOpen = false;
   private fileName: string;
-  private _isOpen = false;
 
   constructor(fileName: string) {
     this.fileName = fileName;
@@ -49,7 +48,7 @@ export class FileManager {
       // Flush to ensure header is written
       await this.flush();
 
-      this._isOpen = true;
+      this.isOpen = true;
       console.log("FileManager: File created successfully");
     } catch (error) {
       throw new Error(`Failed to create B-tree file: ${error}`);
@@ -76,7 +75,7 @@ export class FileManager {
       // Read and validate header
       this.header = await this.readHeader();
 
-      this._isOpen = true;
+      this.isOpen = true;
     } catch (error) {
       throw new Error(`Failed to open B-tree file: ${error}`);
     }
