@@ -17,6 +17,8 @@ export class BTreeNode<K, V> {
   // This can be the rightmost child, not associated with a specific key in `entries`.
   rightmostChildNodeId?: NodeId;
 
+  public isDirty: boolean = false; // For write-back cache
+
   // Max number of keys: order - 1. Min keys: ceil(order/2) - 1 (except root)
   // Max children: order. Min children: ceil(order/2) (except root)
   private order: number; // Max number of children
@@ -154,5 +156,33 @@ export class BTreeNode<K, V> {
     node.entries = []; // Placeholder
 
     return node;
+  }
+
+  // In BTreeNode.ts (Conceptual)
+  public getAllChildNodeIds(): NodeId[] {
+    if (this.isLeaf) return [];
+    const ids: NodeId[] = [];
+    // This highly depends on your BTreeNode structure for children.
+    // If childNodeIds is a flat array: C0, K0, C1, K1, C2 ... Kn, Cn+1
+    // Then this.childNodeIds would be the array to return.
+    // If child pointers are mixed with entries or only rightmostChildNodeId exists:
+    this.entries.forEach((entry) => {
+      if (entry.childNodeId) ids.push(entry.childNodeId);
+    });
+    if (this.rightmostChildNodeId) {
+      ids.push(this.rightmostChildNodeId);
+    }
+    // Ensure no duplicates if structure could cause them, though it shouldn't for valid B-Trees.
+    // More robustly, if you have a dedicated `this.childNodeIds: NodeId[]` array in BTreeNode:
+    // return this.childNodeIds.filter(id => id !== undefined && id !== null);
+    return ids; // Placeholder - adjust to your actual BTreeNode child pointer storage.
+  }
+
+  public markDirty(): void {
+    this.isDirty = true;
+  }
+
+  public markClean(): void {
+    this.isDirty = false;
   }
 }

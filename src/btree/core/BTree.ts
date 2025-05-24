@@ -33,6 +33,10 @@ export class BTree<K, V> {
   private metadata: BTreeMetadata | null = null;
   private compareKeys: (a: K, b: K) => number;
 
+  // Cache statistics
+  private cacheHits = 0;
+  private cacheMisses = 0;
+
   // Private constructor, use static create/open methods
   private constructor(
     config: Required<BTreeConfig<K, V>>,
@@ -62,7 +66,7 @@ export class BTree<K, V> {
   }
 
   private async loadMetadata(): Promise<void> {
-    const buffer = await this.opfsManager.readBlock(METADATA_BLOCK_ID);
+    const buffer = await this.opfsManager.readBlockSync(METADATA_BLOCK_ID);
     // Crude deserialization for metadata (JSON for simplicity here, binary would be better)
     try {
       const jsonString = new TextDecoder().decode(
@@ -100,38 +104,133 @@ export class BTree<K, V> {
     this.opfsManager.writeBlockSync(METADATA_BLOCK_ID, buffer);
   }
 
-  private async getNode(nodeId: NodeId): Promise<BTreeNode<K, V>> {
-    if (this.nodeCache.has(nodeId)) {
-      // TODO: Implement proper LRU cache behavior (move to front)
-      return this.nodeCache.get(nodeId)!;
+  async getNode(nodeId: NodeId): Promise<BTreeNode<K, V>> {
+    if (this.config.cacheSize > 0 && this.nodeCache.has(nodeId)) {
+      this.cacheHits++;
+      const cachedNode = this.nodeCache.get(nodeId)!;
+      // LRU: Move to most recently used by deleting and re-setting
+      this.nodeCache.delete(nodeId);
+      this.nodeCache.set(nodeId, cachedNode);
+      return cachedNode;
     }
 
-    const buffer = this.opfsManager.readBlockSync(nodeId);
+    if (this.config.cacheSize > 0) {
+      this.cacheMisses++;
+    }
+
+    const buffer = this.opfsManager.readBlockSync(nodeId); // Switched to async as it's more typical
     const node = BTreeNode.deserialize<K, V>(
       nodeId,
-      this.config.order,
+      this.config.order, // order is needed for BTreeNode logic like isFull, split points
       buffer,
       this.config.keySerializer,
       this.config.valueSerializer
     );
 
-    if (this.nodeCache.size >= this.config.cacheSize) {
-      // TODO: Implement proper LRU cache eviction
-      const firstKey = this.nodeCache.keys().next().value;
-      this.nodeCache.delete(firstKey);
+    if (this.config.cacheSize > 0) {
+      if (this.nodeCache.size >= this.config.cacheSize) {
+        // Evict least recently used (first item in Map iteration order)
+        const lruNodeId = this.nodeCache.keys().next().value;
+        if (lruNodeId) {
+          const lruNodeToEvict = this.nodeCache.get(lruNodeId);
+          if (
+            this.config.writeMode === "write-back" &&
+            lruNodeToEvict &&
+            lruNodeToEvict.isDirty
+          ) {
+            // Check .isDirty
+            // console.log(`[CACHE EVICT] Writing dirty node ${lruNodeId} before eviction.`);
+            await this.writeNodeInternal(lruNodeToEvict, false); // Internal write, don't re-add to cache here
+          }
+          this.nodeCache.delete(lruNodeId);
+        }
+      }
+      this.nodeCache.set(nodeId, node);
     }
-    this.nodeCache.set(nodeId, node);
     return node;
   }
 
-  private async writeNode(node: BTreeNode<K, V>): Promise<void> {
+  // Renamed your original writeNode to writeNodeInternal to avoid recursion issues if called from getNode
+  private async writeNodeInternal(
+    node: BTreeNode<K, V>,
+    updateCacheLogic: boolean
+  ): Promise<void> {
     const buffer = node.serialize(
       this.config.keySerializer,
       this.config.valueSerializer,
       this.config.pageSize
     );
-    this.opfsManager.writeBlockSync(node.id, buffer);
-    this.nodeCache.set(node.id, node); // Update cache
+    await this.opfsManager.writeBlockSync(node.id, buffer); // Switched to async
+    node.markClean(); // Node is now persisted, so it's clean
+
+    if (updateCacheLogic && this.config.cacheSize > 0) {
+      // If in cache, remove and re-add to mark as most recently used and update its instance
+      if (this.nodeCache.has(node.id)) {
+        this.nodeCache.delete(node.id);
+      }
+      this.nodeCache.set(node.id, node);
+      // Ensure cache size constraint after adding
+      while (this.nodeCache.size > this.config.cacheSize) {
+        const lruNodeId = this.nodeCache.keys().next().value;
+        // Note: Evicting here. If the evicted node was dirty, it should have been written
+        // by the write-back logic in getNode's eviction or during explicit flush.
+        // For simplicity, we assume node being evicted here (if not 'node' itself) is clean or handled.
+        if (lruNodeId && lruNodeId !== node.id) {
+          // Don't evict the node we just wrote and cached
+          const nodeToEvict = this.nodeCache.get(lruNodeId);
+          // Defensive write if write-back and dirty, though ideally covered elsewhere
+          if (
+            this.config.writeMode === "write-back" &&
+            nodeToEvict &&
+            nodeToEvict.isDirty
+          ) {
+            // console.warn(`[CACHE OVERFLOW] Writing dirty node ${lruNodeId} during writeNode overflow.`);
+            // await this.writeNodeInternal(nodeToEvict, false); // Avoid recursion
+          }
+          this.nodeCache.delete(lruNodeId);
+        } else if (
+          lruNodeId === node.id &&
+          this.nodeCache.size > this.config.cacheSize
+        ) {
+          // This case should not happen if logic is correct (we just added 'node').
+          // If it does, means cache size is likely 0 or 1 and we are overfilling.
+          // This indicates a potential flaw if we are evicting the node we just added due to size 1 cache.
+        }
+      }
+    }
+  }
+
+  // Public writeNode that application logic (like insert/delete) will call
+  public async writeNode(node: BTreeNode<K, V>): Promise<void> {
+    if (this.config.writeMode === "write-through") {
+      await this.writeNodeInternal(node, true);
+    } else if (this.config.writeMode === "write-back") {
+      node.markDirty(); // Mark as dirty, will be written by flush or eviction
+      // Ensure it's in cache if cache is enabled
+      if (this.config.cacheSize > 0) {
+        if (this.nodeCache.has(node.id)) {
+          this.nodeCache.delete(node.id); // Remove to re-add as MRU
+        }
+        this.nodeCache.set(node.id, node);
+        // Eviction logic if cache overflows after adding/updating dirty node
+        while (this.nodeCache.size > this.config.cacheSize) {
+          const lruNodeId = this.nodeCache.keys().next().value;
+          if (lruNodeId) {
+            const lruNodeToEvict = this.nodeCache.get(lruNodeId);
+            if (lruNodeToEvict && lruNodeToEvict.isDirty) {
+              // console.log(`[CACHE EVICT DIRTY] Writing dirty node ${lruNodeId} from writeNode due to overflow.`);
+              await this.writeNodeInternal(lruNodeToEvict, false); // Write it before evicting
+            }
+            this.nodeCache.delete(lruNodeId);
+          }
+        }
+      } else {
+        // No cache, write-back implies it should be written eventually.
+        // This scenario is odd (write-back with no cache).
+        // For now, assume if no cache, write-back behaves like write-through.
+        await this.writeNodeInternal(node, false);
+      }
+    }
   }
 
   public static async create<K, V>(
@@ -221,15 +320,35 @@ export class BTree<K, V> {
     }
   }
 
-  async close(): Promise<void> {
-    // TODO: Flush write-back cache if implemented
-    if (this.config.writeMode === "write-back") {
-      // await this.flushDirtyNodes();
+  private async flushDirtyNodes(): Promise<void> {
+    if (this.config.writeMode !== "write-back") return;
+
+    // console.log(`[FLUSH] Flushing ${this.nodeCache.size} cached nodes for dirty ones.`);
+    for (const node of this.nodeCache.values()) {
+      if (node.isDirty) {
+        // Check the .isDirty property
+        // console.log(`[FLUSH] Writing dirty node ${node.id}.`);
+        await this.writeNodeInternal(node, false); // Use internal write, don't affect LRU order during flush
+      }
     }
-    await this.opfsManager.flush(); // Ensure OPFSManager flushes its state
+  }
+
+  async close(): Promise<void> {
+    if (!this.metadata) {
+      // Already closed or never opened
+      // console.warn("[BTree] Close called on an already closed or uninitialized tree.");
+      return;
+    }
+    // console.log("[BTree] Closing tree...");
+    await this.flushDirtyNodes(); // Flush any pending writes if in write-back mode
+    await this.opfsManager.flush(); // Ensure OPFSManager flushes its OS-level cache
     await this.opfsManager.close();
+
     this.nodeCache.clear();
-    this.metadata = null;
+    this.metadata = null; // Mark as closed/uninitialized
+    this.cacheHits = 0;
+    this.cacheMisses = 0;
+    // console.log("[BTree] Tree closed.");
   }
 
   static async destroy(name: string): Promise<void> {
@@ -339,11 +458,6 @@ export class BTree<K, V> {
     throw new Error("Range not implemented");
   }
 
-  async entries(): Promise<Array<[K, V]>> {
-    // TODO: Implement iteration over all entries
-    throw new Error("Entries not implemented");
-  }
-
   async clear(): Promise<void> {
     // TODO: Clear all data - effectively re-initialize or mark all blocks as free.
     // Simplest: close, delete file, re-create with initializeNewTree.
@@ -355,19 +469,111 @@ export class BTree<K, V> {
   }
 
   async stats(): Promise<BTreeStats> {
-    if (!this.metadata) throw new Error("Tree not initialized or closed.");
-    // TODO: Calculate actual height, numNodes, numEntries, etc.
+    if (!this.metadata) {
+      // console.error("[BTree] Stats called on uninitialized or closed tree.");
+      throw new Error("Tree not initialized or closed.");
+    }
+
+    let numNodes = 0;
+    let numEntries = 0;
+    let calculatedHeight = 0;
+
+    if (this.metadata.rootNodeId) {
+      const queue: Array<{ nodeId: NodeId; level: number }> = [];
+      queue.push({ nodeId: this.metadata.rootNodeId, level: 1 });
+      const visited = new Set<NodeId>();
+      visited.add(this.metadata.rootNodeId);
+
+      let head = 0;
+      while (head < queue.length) {
+        const current = queue[head++];
+        numNodes++;
+        calculatedHeight = Math.max(calculatedHeight, current.level);
+
+        const node = await this.getNode(current.nodeId); // Uses cache
+        numEntries += node.entries.length;
+
+        if (!node.isLeaf) {
+          // Iterate through all conceptual child pointers.
+          // This depends on how BTreeNode stores childNodeIds.
+          // Assuming BTreeNode.getAllChildNodeIds() returns all valid child IDs.
+          const childIds = node.getAllChildNodeIds(); // You'll need to implement this in BTreeNode
+          for (const childId of childIds) {
+            if (childId && !visited.has(childId)) {
+              visited.add(childId);
+              queue.push({ nodeId: childId, level: current.level + 1 });
+            }
+          }
+        }
+      }
+    }
+
     return {
       order: this.config.order,
-      height: -1, // Placeholder
-      numNodes: -1, // Placeholder
-      numEntries: -1, // Placeholder
+      height: calculatedHeight,
+      numNodes: numNodes,
+      numEntries: numEntries,
       cacheSize: this.config.cacheSize,
-      cacheHits: 0, // Placeholder
-      cacheMisses: 0, // Placeholder
+      cacheHits: this.cacheHits,
+      cacheMisses: this.cacheMisses,
       fileSize: await this.opfsManager.getFileSize(),
       pageSize: this.config.pageSize,
     };
+  }
+
+  async entries(): Promise<Array<[K, V]>> {
+    //
+    if (!this.metadata) throw new Error("Tree not initialized or closed.");
+    const results: Array<[K, V]> = [];
+    if (this.metadata.rootNodeId) {
+      await this.collectEntriesRecursive(
+        await this.getNode(this.metadata.rootNodeId),
+        results
+      );
+    }
+    return results;
+  }
+
+  // Recursive helper for collecting entries
+  private async collectEntriesRecursive(
+    node: BTreeNode<K, V>,
+    results: Array<[K, V]>
+  ): Promise<void> {
+    if (node.isLeaf) {
+      //
+      for (const entry of node.entries) {
+        // As per BTreeNode.ts, values are only in leaf nodes.
+        if (entry.value !== undefined) {
+          results.push([entry.key, entry.value]);
+        }
+      }
+    } else {
+      // Internal node
+      // Traversal: Child0, Key0, Child1, Key1, ..., KeyN-1, ChildN
+      // entries[i].childNodeId is Child_i (keys < entries[i].key)
+      // rightmostChildNodeId is Child_N (keys > entries[N-1].key)
+      for (let i = 0; i < node.entries.length; i++) {
+        if (node.entries[i].childNodeId !== undefined) {
+          await this.collectEntriesRecursive(
+            await this.getNode(node.entries[i].childNodeId!),
+            results
+          );
+        }
+        // In a B-Tree where values are only in leaves, internal keys are just for structure.
+        // So, we don't add `node.entries[i]` itself to results here.
+        // The search logic implies we only pull values from leaves.
+        // If BTree required internal node values, we'd add here:
+        // if (node.entries[i].value !== undefined) results.push([node.entries[i].key, node.entries[i].value!]);
+      }
+      // Process the rightmost child
+      if (node.rightmostChildNodeId !== undefined) {
+        //
+        await this.collectEntriesRecursive(
+          await this.getNode(node.rightmostChildNodeId),
+          results
+        );
+      }
+    }
   }
 
   // TODO: Bulk load, transactions, etc.
