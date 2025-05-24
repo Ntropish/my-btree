@@ -1,0 +1,52 @@
+opfs-btree/
+├── package.json
+├── tsconfig.json
+├── tsconfig.build.json
+├── .gitignore
+├── README.md
+├── LICENSE
+├── src/
+│   ├── index.ts                 # Main entry point, exports public API
+│   ├── client/
+│   │   ├── BTreeClient.ts       # Main thread client implementation
+│   │   └── MessageBridge.ts     # Promise-based message passing
+│   ├── worker/
+│   │   ├── BTreeWorker.ts       # Worker entry point
+│   │   ├── BTreeCore.ts         # Core B-tree logic
+│   │   ├── NodeManager.ts       # Node I/O and caching
+│   │   ├── FileManager.ts       # OPFS file operations
+│   │   └── FreeSpaceManager.ts  # Free space tracking
+│   ├── storage/
+│   │   ├── FileLayout.ts        # File structure definitions
+│   │   ├── Serializer.ts        # Serialization interfaces
+│   │   ├── serializers/
+│   │   │   ├── PrimitiveSerializer.ts
+│   │   │   ├── JSONSerializer.ts
+│   │   │   └── index.ts
+│   │   └── Cache.ts             # LRU cache implementation
+│   ├── types/
+│   │   ├── messages.ts          # Worker message types
+│   │   ├── btree.ts             # B-tree interfaces
+│   │   └── index.ts
+│   └── utils/
+│       ├── checksum.ts          # CRC32 implementation
+│       ├── buffer.ts            # Buffer utilities
+│       └── errors.ts            # Custom error classes
+├── tests/
+│   ├── unit/
+│   │   ├── BTreeCore.test.ts
+│   │   ├── Serializer.test.ts
+│   │   └── Cache.test.ts
+│   ├── integration/
+│   │   ├── BTreeClient.test.ts
+│   │   └── FileOperations.test.ts
+│   └── setup.ts
+├── examples/
+│   ├── basic-usage.ts
+│   ├── custom-serializer.ts
+│   └── bulk-loading.ts
+└── dist/                        # Build output
+    ├── index.js
+    ├── index.d.ts
+    ├── worker.js
+    └── ...
