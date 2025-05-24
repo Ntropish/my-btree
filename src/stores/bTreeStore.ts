@@ -49,8 +49,6 @@ interface BTreeStore {
   bulkLoadProgress: number;
 
   // Actions
-  initialize: () => Promise<void>;
-  cleanup: () => Promise<void>;
   insert: (key: number, value: string) => Promise<void>;
   search: (key: number) => Promise<void>;
   delete: (key: number) => Promise<void>;
@@ -71,328 +69,285 @@ interface BTreeStore {
   setError: (error: string | null) => void;
 }
 
-// Global reference to prevent multiple initializations
-let initializationPromise: Promise<void> | null = null;
+export const useBTreeStore = create<BTreeStore>((set, get) => {
+  // Start initialization
+  (async () => {
+    set({ loading: true, error: null });
+    let btreeProxy: BTree<number, string> | null = null;
 
-const treeName = "showcase-btree";
+    try {
+      // Force cleanup to ensure no stale handles
+      await forceCleanupOPFS("showcase-btree");
 
-const createConfig = {
-  name: treeName,
-  keySerializer: new NumberSerializer(),
-  valueSerializer: new StringSerializer(),
-  // No compareKeys provided explicitly, so defaultCompareKeys should be used.
-};
-console.log("[TEST_CREATE_CASE] Config for BTreeProxy.create:", createConfig);
-const btreeProxy = await BTree.openOrCreate<number, string>(createConfig);
+      // Create new instance
+      console.log("Creating new B-tree instance...");
+      btreeProxy = await BTree.openOrCreate<number, string>({
+        name: "showcase-btree",
+        keySerializer: new NumberSerializer(),
+        valueSerializer: new StringSerializer(),
+        order: 32,
+        cacheSize: 100,
+      });
 
-export const useBTreeStore = create<BTreeStore>((set, get) => ({
-  // Initial state
-  btree: btreeProxy,
-  loading: false,
-  initialized: false,
-  entries: [],
-  stats: null,
-  error: null,
-  searchResult: null,
-  rangeResults: [],
-  bulkLoadProgress: 0,
+      console.log("B-tree created successfully");
 
-  // Initialize B-tree
-  initialize: async () => {
-    const state = get();
+      // Think about setting up close event listeners here
 
-    // If already initialized, return
-    if (state.initialized && globalBTree) {
-      set({ btree: globalBTree });
-      return;
+      set({
+        btree: btreeProxy,
+        initialized: true,
+        loading: false,
+      });
+
+      // Initial data refresh
+      await get().refreshData();
+    } catch (error) {
+      console.error("Failed to initialize B-tree:", error);
+      set({
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to initialize B-tree",
+        loading: false,
+        initialized: false,
+      });
+    } finally {
+      set({ loading: false });
     }
+  })();
 
-    // If initialization is in progress, wait for it
-    if (initializationPromise) {
-      await initializationPromise;
-      return;
-    }
+  return {
+    // Initial state
+    btree: null,
+    loading: false,
+    initialized: false,
+    entries: [],
+    stats: null,
+    error: null,
+    searchResult: null,
+    rangeResults: [],
+    bulkLoadProgress: 0,
 
-    // Start initialization
-    initializationPromise = (async () => {
+    // Insert operation
+    insert: async (key: number, value: string) => {
+      const { btree } = get();
+      if (!btree) {
+        set({ error: "B-tree not initialized" });
+        return;
+      }
+
       set({ loading: true, error: null });
 
       try {
-        // Force cleanup to ensure no stale handles
-        await forceCleanupOPFS("showcase-btree");
-
-        // Create new instance
-        console.log("Creating new B-tree instance...");
-        globalBTree = await BTree.create<number, string>({
-          name: "showcase-btree",
-          keySerializer: new NumberSerializer(),
-          valueSerializer: new StringSerializer(),
-          order: 32,
-          cacheSize: 100,
-        });
-
-        console.log("B-tree created successfully");
-
-        set({
-          btree: globalBTree,
-          initialized: true,
-          loading: false,
-        });
-
-        // Initial data refresh
+        await btree.insert(key, value);
         await get().refreshData();
       } catch (error) {
-        console.error("Failed to initialize B-tree:", error);
+        set({
+          error: error instanceof Error ? error.message : "Insert failed",
+        });
+        throw error;
+      } finally {
+        set({ loading: false });
+      }
+    },
+
+    // Search operation
+    search: async (key: number) => {
+      const { btree } = get();
+      if (!btree) {
+        set({ error: "B-tree not initialized" });
+        return;
+      }
+
+      set({ loading: true, error: null });
+
+      try {
+        const result = await btree.search(key);
+        set({ searchResult: result });
+      } catch (error) {
+        set({
+          error: error instanceof Error ? error.message : "Search failed",
+        });
+        throw error;
+      } finally {
+        set({ loading: false });
+      }
+    },
+
+    // Delete operation
+    delete: async (key: number) => {
+      const { btree } = get();
+      if (!btree) {
+        set({ error: "B-tree not initialized" });
+        return;
+      }
+
+      set({ loading: true, error: null });
+
+      try {
+        const deleted = await btree.delete(key);
+        if (!deleted) {
+          throw new Error(`Key ${key} not found`);
+        }
+        await get().refreshData();
+      } catch (error) {
+        set({
+          error: error instanceof Error ? error.message : "Delete failed",
+        });
+        throw error;
+      } finally {
+        set({ loading: false });
+      }
+    },
+
+    // Range query
+    range: async (
+      start: number,
+      end: number,
+      includeStart = true,
+      includeEnd = true
+    ) => {
+      const { btree } = get();
+      if (!btree) {
+        set({ error: "B-tree not initialized" });
+        return;
+      }
+
+      set({ loading: true, error: null });
+
+      try {
+        const results = await btree.range(start, end, {
+          includeStart,
+          includeEnd,
+        });
+        set({ rangeResults: results });
+      } catch (error) {
+        set({
+          error: error instanceof Error ? error.message : "Range query failed",
+        });
+        throw error;
+      } finally {
+        set({ loading: false });
+      }
+    },
+
+    // Clear all data
+    clear: async () => {
+      const { btree } = get();
+      if (!btree) {
+        set({ error: "B-tree not initialized" });
+        return;
+      }
+
+      set({ loading: true, error: null });
+
+      try {
+        await btree.clear();
+        await get().refreshData();
+        set({ searchResult: null, rangeResults: [] });
+      } catch (error) {
+        set({ error: error instanceof Error ? error.message : "Clear failed" });
+        throw error;
+      } finally {
+        set({ loading: false });
+      }
+    },
+
+    // Bulk load demo data
+    bulkLoad: async () => {
+      const { btree } = get();
+      if (!btree) {
+        set({ error: "B-tree not initialized" });
+        return;
+      }
+
+      set({ loading: true, error: null, bulkLoadProgress: 0 });
+
+      try {
+        // Generate demo data
+        const demoData: Array<[number, string]> = [];
+        const words = [
+          "apple",
+          "banana",
+          "cherry",
+          "date",
+          "elderberry",
+          "fig",
+          "grape",
+          "honeydew",
+        ];
+
+        for (let i = 0; i < 100; i++) {
+          const word = words[Math.floor(Math.random() * words.length)];
+          demoData.push([i * 10, `${word}_${i}`]);
+        }
+
+        await btree.bulkLoad(demoData, {
+          sorted: true,
+          onProgress: (loaded, total) => {
+            set({ bulkLoadProgress: (loaded / total) * 100 });
+          },
+        });
+
+        await get().refreshData();
+      } catch (error) {
+        set({
+          error: error instanceof Error ? error.message : "Bulk load failed",
+        });
+        throw error;
+      } finally {
+        set({ loading: false, bulkLoadProgress: 0 });
+      }
+    },
+
+    // Verify tree integrity
+    verify: async () => {
+      const { btree } = get();
+      if (!btree) {
+        set({ error: "B-tree not initialized" });
+        return;
+      }
+
+      set({ loading: true, error: null });
+
+      try {
+        const isValid = await btree.verify();
+        if (!isValid) {
+          throw new Error("Tree integrity check failed");
+        }
+      } catch (error) {
+        set({
+          error: error instanceof Error ? error.message : "Verification failed",
+        });
+        throw error;
+      } finally {
+        set({ loading: false });
+      }
+    },
+
+    // Refresh data and stats
+    refreshData: async () => {
+      const { btree } = get();
+      if (!btree) return;
+
+      try {
+        const [allEntries, treeStats] = await Promise.all([
+          btree.entries(),
+          btree.stats(),
+        ]);
+
+        set({ entries: allEntries, stats: treeStats });
+      } catch (error) {
         set({
           error:
-            error instanceof Error
-              ? error.message
-              : "Failed to initialize B-tree",
-          loading: false,
-          initialized: false,
+            error instanceof Error ? error.message : "Failed to refresh data",
         });
-        globalBTree = null;
-      } finally {
-        initializationPromise = null;
       }
-    })();
+    },
 
-    await initializationPromise;
-  },
-
-  // Cleanup B-tree
-  cleanup: async () => {
-    if (btreeProxy) {
-      try {
-        await btreeProxy.close();
-      } catch (error) {
-        console.error("Error closing B-tree:", error);
-      }
-    }
-
-    set({
-      initialized: false,
-      entries: [],
-      stats: null,
-      searchResult: null,
-      rangeResults: [],
-      error: null,
-    });
-  },
-
-  // Insert operation
-  insert: async (key: number, value: string) => {
-    const { btree } = get();
-    if (!btree) {
-      set({ error: "B-tree not initialized" });
-      return;
-    }
-
-    set({ loading: true, error: null });
-
-    try {
-      await btree.insert(key, value);
-      await get().refreshData();
-    } catch (error) {
-      set({ error: error instanceof Error ? error.message : "Insert failed" });
-      throw error;
-    } finally {
-      set({ loading: false });
-    }
-  },
-
-  // Search operation
-  search: async (key: number) => {
-    const { btree } = get();
-    if (!btree) {
-      set({ error: "B-tree not initialized" });
-      return;
-    }
-
-    set({ loading: true, error: null });
-
-    try {
-      const result = await btree.search(key);
-      set({ searchResult: result });
-    } catch (error) {
-      set({ error: error instanceof Error ? error.message : "Search failed" });
-      throw error;
-    } finally {
-      set({ loading: false });
-    }
-  },
-
-  // Delete operation
-  delete: async (key: number) => {
-    const { btree } = get();
-    if (!btree) {
-      set({ error: "B-tree not initialized" });
-      return;
-    }
-
-    set({ loading: true, error: null });
-
-    try {
-      const deleted = await btree.delete(key);
-      if (!deleted) {
-        throw new Error(`Key ${key} not found`);
-      }
-      await get().refreshData();
-    } catch (error) {
-      set({ error: error instanceof Error ? error.message : "Delete failed" });
-      throw error;
-    } finally {
-      set({ loading: false });
-    }
-  },
-
-  // Range query
-  range: async (
-    start: number,
-    end: number,
-    includeStart = true,
-    includeEnd = true
-  ) => {
-    const { btree } = get();
-    if (!btree) {
-      set({ error: "B-tree not initialized" });
-      return;
-    }
-
-    set({ loading: true, error: null });
-
-    try {
-      const results = await btree.range(start, end, {
-        includeStart,
-        includeEnd,
-      });
-      set({ rangeResults: results });
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : "Range query failed",
-      });
-      throw error;
-    } finally {
-      set({ loading: false });
-    }
-  },
-
-  // Clear all data
-  clear: async () => {
-    const { btree } = get();
-    if (!btree) {
-      set({ error: "B-tree not initialized" });
-      return;
-    }
-
-    set({ loading: true, error: null });
-
-    try {
-      await btree.clear();
-      await get().refreshData();
-      set({ searchResult: null, rangeResults: [] });
-    } catch (error) {
-      set({ error: error instanceof Error ? error.message : "Clear failed" });
-      throw error;
-    } finally {
-      set({ loading: false });
-    }
-  },
-
-  // Bulk load demo data
-  bulkLoad: async () => {
-    const { btree } = get();
-    if (!btree) {
-      set({ error: "B-tree not initialized" });
-      return;
-    }
-
-    set({ loading: true, error: null, bulkLoadProgress: 0 });
-
-    try {
-      // Generate demo data
-      const demoData: Array<[number, string]> = [];
-      const words = [
-        "apple",
-        "banana",
-        "cherry",
-        "date",
-        "elderberry",
-        "fig",
-        "grape",
-        "honeydew",
-      ];
-
-      for (let i = 0; i < 100; i++) {
-        const word = words[Math.floor(Math.random() * words.length)];
-        demoData.push([i * 10, `${word}_${i}`]);
-      }
-
-      await btree.bulkLoad(demoData, {
-        sorted: true,
-        onProgress: (loaded, total) => {
-          set({ bulkLoadProgress: (loaded / total) * 100 });
-        },
-      });
-
-      await get().refreshData();
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : "Bulk load failed",
-      });
-      throw error;
-    } finally {
-      set({ loading: false, bulkLoadProgress: 0 });
-    }
-  },
-
-  // Verify tree integrity
-  verify: async () => {
-    const { btree } = get();
-    if (!btree) {
-      set({ error: "B-tree not initialized" });
-      return;
-    }
-
-    set({ loading: true, error: null });
-
-    try {
-      const isValid = await btree.verify();
-      if (!isValid) {
-        throw new Error("Tree integrity check failed");
-      }
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : "Verification failed",
-      });
-      throw error;
-    } finally {
-      set({ loading: false });
-    }
-  },
-
-  // Refresh data and stats
-  refreshData: async () => {
-    const { btree } = get();
-    if (!btree) return;
-
-    try {
-      const [allEntries, treeStats] = await Promise.all([
-        btree.entries(),
-        btree.stats(),
-      ]);
-
-      set({ entries: allEntries, stats: treeStats });
-    } catch (error) {
-      set({
-        error:
-          error instanceof Error ? error.message : "Failed to refresh data",
-      });
-    }
-  },
-
-  // Setters
-  setSearchResult: (result) => set({ searchResult: result }),
-  setRangeResults: (results) => set({ rangeResults: results }),
-  setError: (error) => set({ error }),
-}));
+    // Setters
+    setSearchResult: (result) => set({ searchResult: result }),
+    setRangeResults: (results) => set({ rangeResults: results }),
+    setError: (error) => set({ error }),
+  };
+});

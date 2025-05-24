@@ -9,7 +9,6 @@ import {
   defaultCompareKeys,
   DEFAULT_TRANSACTION_LOG,
 } from "../BTreeConfig";
-import { Serializer } from "../serializers/Serializer";
 import { OPFSManager } from "../opfs/OPFSManager";
 import { BTreeNode, type NodeId } from "./BTreeNode";
 
@@ -107,7 +106,7 @@ export class BTree<K, V> {
       return this.nodeCache.get(nodeId)!;
     }
 
-    const buffer = await this.opfsManager.readBlock(nodeId);
+    const buffer = this.opfsManager.readBlockSync(nodeId);
     const node = BTreeNode.deserialize<K, V>(
       nodeId,
       this.config.order,
