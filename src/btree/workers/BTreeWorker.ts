@@ -187,6 +187,14 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
         console.log("[WORKER] Exists result:", result);
         break;
 
+      case "entries":
+        console.log("[WORKER] Action: entries");
+        if (!tree)
+          throw new Error("[WORKER] Tree not initialized for entries.");
+        result = await tree.entries();
+        console.log("[WORKER] Entries result:", result);
+        break;
+
       default:
         console.error(`[WORKER] Unknown action: ${action}`);
         throw new Error(`Unknown action: ${action}`);

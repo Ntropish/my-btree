@@ -97,7 +97,7 @@ export class BTree<K, V> {
     const buffer = new Uint8Array(this.config.pageSize);
     const encoded = new TextEncoder().encode(jsonString);
     buffer.set(encoded); // Leaves rest of buffer as zeros (includes null terminator if string fits)
-    await this.opfsManager.writeBlock(METADATA_BLOCK_ID, buffer);
+    this.opfsManager.writeBlockSync(METADATA_BLOCK_ID, buffer);
   }
 
   private async getNode(nodeId: NodeId): Promise<BTreeNode<K, V>> {
@@ -130,21 +130,34 @@ export class BTree<K, V> {
       this.config.valueSerializer,
       this.config.pageSize
     );
-    await this.opfsManager.writeBlock(node.id, buffer);
+    this.opfsManager.writeBlockSync(node.id, buffer);
     this.nodeCache.set(node.id, node); // Update cache
   }
 
   public static async create<K, V>(
     userConfig: BTreeConfig<K, V>
   ): Promise<BTree<K, V>> {
+    if (!userConfig.name) {
+      throw new Error("BTree name is required.");
+    }
+
+    if (!userConfig.keySerializer) {
+      throw new Error("Key serializer is required.");
+    }
+
+    if (!userConfig.valueSerializer) {
+      throw new Error("Value serializer is required.");
+    }
+
     const config: Required<BTreeConfig<K, V>> = {
-      order: DEFAULT_ORDER,
-      cacheSize: DEFAULT_CACHE_SIZE,
-      pageSize: DEFAULT_PAGE_SIZE,
-      writeMode: DEFAULT_WRITE_MODE,
-      enableTransactionLog: DEFAULT_TRANSACTION_LOG,
-      compareKeys: defaultCompareKeys as (a: K, b: K) => number, // Cast needed if K is generic
       ...userConfig,
+      order: userConfig.order ?? DEFAULT_ORDER,
+      cacheSize: userConfig.cacheSize ?? DEFAULT_CACHE_SIZE,
+      pageSize: userConfig.pageSize ?? DEFAULT_PAGE_SIZE,
+      writeMode: userConfig.writeMode ?? DEFAULT_WRITE_MODE,
+      enableTransactionLog:
+        userConfig.enableTransactionLog ?? DEFAULT_TRANSACTION_LOG,
+      compareKeys: userConfig.compareKeys || defaultCompareKeys,
     };
 
     if (await OPFSManager.storeExists(config.name)) {
@@ -201,13 +214,10 @@ export class BTree<K, V> {
   public static async openOrCreate<K, V>(
     userConfig: BTreeConfig<K, V>
   ): Promise<BTree<K, V>> {
-    try {
+    if (await OPFSManager.storeExists(userConfig.name)) {
       return await BTree.open(userConfig);
-    } catch (e) {
-      if (e instanceof Error && e.message.includes("does not exist")) {
-        return await BTree.create(userConfig);
-      }
-      throw e;
+    } else {
+      return await BTree.create(userConfig);
     }
   }
 
